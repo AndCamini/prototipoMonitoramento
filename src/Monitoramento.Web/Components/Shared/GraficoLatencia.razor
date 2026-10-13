@@ -1,0 +1,152 @@
+@* Gráfico de latência ICMP de um dispositivo (RF13), desenhado em SVG no servidor.
+   Pontos sem resposta aparecem como marcas vermelhas sobre o eixo horizontal. *@
+@using System.Globalization
+
+<div class="grafico">
+    @if (Pontos.Count == 0)
+    {
+        <div class="vazio">Nenhuma verificação registrada no período selecionado.</div>
+    }
+    else
+    {
+        <svg viewBox="0 0 @Largura @Altura" role="img" aria-label="@Descricao">
+            <title>@Descricao</title>
+
+            @* Grade e eixo Y (recessivos) *@
+            @foreach (var valor in TicksY)
+            {
+                var y = Y(valor);
+                <line class="grade-linha" x1="@F(MargemEsq)" x2="@F(Largura - MargemDir)" y1="@F(y)" y2="@F(y)" />
+                @Texto(MargemEsq - 8, y + 4, "end", $"{valor} ms")
+            }
+            <line class="eixo-linha" x1="@F(MargemEsq)" x2="@F(Largura - MargemDir)" y1="@F(Base)" y2="@F(Base)" />
+
+            @* Eixo X *@
+            @foreach (var instante in TicksX)
+            {
+                @Texto(X(instante), Base + 20, "middle", RotuloTempo(instante))
+            }
+
+            @* Área e linha: um segmento por trecho contínuo de respostas *@
+            @foreach (var trecho in Trechos)
+            {
+                if (trecho.Count == 1)
+                {
+                    <circle class="ponto" cx="@F(X(trecho[0].Instante))" cy="@F(Y(trecho[0].LatenciaMs!.Value))" r="4" />
+                    continue;
+                }
+                <path class="area" d="@CaminhoArea(trecho)" />
+                <polyline class="linha" points="@Pontilhado(trecho)" />
+            }
+
+            @* Falhas (sem resposta) *@
+            @foreach (var falha in Pontos.Where(p => p.LatenciaMs is null))
+            {
+                <rect class="falha" x="@F(X(falha.Instante) - 2)" y="@F(Base - 12)" width="4" height="12" rx="1" />
+            }
+
+            @* Alvos de hover maiores que as marcas, com dica nativa *@
+            @for (var i = 0; i < Pontos.Count; i++)
+            {
+                var p = Pontos[i];
+                var (x0, x1) = Faixa(i);
+                <rect class="alvo" x="@F(x0)" y="@F(MargemSup)" width="@F(Math.Max(1, x1 - x0))" height="@F(Base - MargemSup)">
+                    <title>@Formatacao.DataHora(p.Instante): @(p.LatenciaMs is { } ms ? $"{ms} ms" : "sem resposta")</title>
+                </rect>
+            }
+        </svg>
+
+        <div class="legenda">
+            <span><i></i>Latência (ms)</span>
+            <span><i class="falha"></i>Sem resposta</span>
+            <span>Mín. @Formatacao.Latencia(Respostas.Count > 0 ? Respostas.Min() : null)</span>
+            <span>Média @Formatacao.Latencia(Respostas.Count > 0 ? (int)Math.Round(Respostas.Average()) : null)</span>
+            <span>Máx. @Formatacao.Latencia(Respostas.Count > 0 ? Respostas.Max() : null)</span>
+            <span>@Pontos.Count(p => p.LatenciaMs is null) ponto(s) sem resposta</span>
+        </div>
+    }
+</div>
+
+@code {
+    [Parameter, EditorRequired] public List<PontoLatencia> Pontos { get; set; } = [];
+    [Parameter, EditorRequired] public DateTime De { get; set; }
+    [Parameter, EditorRequired] public DateTime Ate { get; set; }
+    [Parameter] public string Titulo { get; set; } = "Latência";
+
+    private const double Largura = 900, Altura = 280;
+    private const double MargemEsq = 64, MargemDir = 16, MargemSup = 12, MargemInf = 34;
+    private const double Base = Altura - MargemInf;
+
+    private List<int> Respostas = [];
+    private List<List<PontoLatencia>> Trechos = [];
+    private List<int> TicksY = [];
+    private List<DateTime> TicksX = [];
+    private double MaxY = 10;
+
+    private string Descricao =>
+        $"{Titulo}: {Pontos.Count} aferições entre {Formatacao.DataHora(De)} e {Formatacao.DataHora(Ate)}";
+
+    protected override void OnParametersSet()
+    {
+        Respostas = Pontos.Where(p => p.LatenciaMs.HasValue).Select(p => p.LatenciaMs!.Value).ToList();
+
+        Trechos = [];
+        List<PontoLatencia>? atual = null;
+        foreach (var p in Pontos)
+        {
+            if (p.LatenciaMs is null) { atual = null; continue; }
+            if (atual is null) { atual = []; Trechos.Add(atual); }
+            atual.Add(p);
+        }
+
+        var passo = PassoRedondo(Math.Max(Respostas.DefaultIfEmpty(0).Max() * 1.15, 4) / 4);
+        MaxY = passo * 4;
+        TicksY = Enumerable.Range(0, 5).Select(i => (int)(i * passo)).ToList();
+
+        var span = Ate - De;
+        TicksX = Enumerable.Range(0, 6).Select(i => De + span * i / 5).ToList();
+    }
+
+    private static double PassoRedondo(double bruto)
+    {
+        var magnitude = Math.Pow(10, Math.Floor(Math.Log10(Math.Max(bruto, 1))));
+        var normalizado = bruto / magnitude;
+        var fator = normalizado <= 1 ? 1 : normalizado <= 2 ? 2 : normalizado <= 5 ? 5 : 10;
+        return Math.Max(1, fator * magnitude);
+    }
+
+    private double X(DateTime t)
+    {
+        var total = (Ate - De).TotalSeconds;
+        var fracao = total <= 0 ? 0 : Math.Clamp((t - De).TotalSeconds / total, 0, 1);
+        return MargemEsq + fracao * (Largura - MargemEsq - MargemDir);
+    }
+
+    private double Y(double v) => MargemSup + (1 - Math.Min(v, MaxY) / MaxY) * (Base - MargemSup);
+
+    private (double, double) Faixa(int i)
+    {
+        var x = X(Pontos[i].Instante);
+        var anterior = i > 0 ? (X(Pontos[i - 1].Instante) + x) / 2 : Math.Max(MargemEsq, x - 6);
+        var proximo = i < Pontos.Count - 1 ? (X(Pontos[i + 1].Instante) + x) / 2 : Math.Min(Largura - MargemDir, x + 6);
+        return (anterior, proximo);
+    }
+
+    private string Pontilhado(List<PontoLatencia> trecho) =>
+        string.Join(' ', trecho.Select(p => $"{F(X(p.Instante))},{F(Y(p.LatenciaMs!.Value))}"));
+
+    private string CaminhoArea(List<PontoLatencia> trecho) =>
+        $"M{F(X(trecho[0].Instante))},{F(Base)} L{Pontilhado(trecho).Replace(" ", " L")} L{F(X(trecho[^1].Instante))},{F(Base)} Z";
+
+    private string RotuloTempo(DateTime utc)
+    {
+        var local = Formatacao.ParaLocal(utc);
+        return (Ate - De).TotalHours <= 24 ? local.ToString("HH:mm") : local.ToString("dd/MM HH:mm");
+    }
+
+    // O Razor reserva a tag <text>; o rótulo SVG é emitido como marcação codificada.
+    private static MarkupString Texto(double x, double y, string ancora, string conteudo) =>
+        new($"<text class=\"rotulo-eixo\" x=\"{F(x)}\" y=\"{F(y)}\" text-anchor=\"{ancora}\">{System.Net.WebUtility.HtmlEncode(conteudo)}</text>");
+
+    private static string F(double v) => v.ToString("0.#", CultureInfo.InvariantCulture);
+}

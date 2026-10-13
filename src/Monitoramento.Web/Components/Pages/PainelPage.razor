@@ -1,0 +1,212 @@
+@page "/"
+@implements IDisposable
+@inject IConsultaPainel Consulta
+@inject INotificadorDeEstado Notificador
+@inject ILogger<PainelPage> Logger
+
+<PageTitle>Painel · Monitor de Rede</PageTitle>
+
+<header class="cabecalho">
+    <div>
+        <h1>Painel</h1>
+        <p>Estado atual dos dispositivos monitorados. A página se atualiza sozinha a cada verificação.</p>
+    </div>
+    <div class="acoes">
+        <span class="ao-vivo" role="status">Ao vivo · atualizado às @atualizadoEm.ToString("HH:mm:ss")</span>
+        <a class="botao primario" href="dispositivos/novo">+ Cadastrar dispositivo</a>
+    </div>
+</header>
+
+@if (erro is not null)
+{
+    <div class="aviso erro" role="alert">@erro</div>
+}
+
+@if (resumo is null)
+{
+    <p class="suave">Carregando…</p>
+}
+else if (resumo.Count == 0)
+{
+    <div class="cartao vazio">
+        <h2>Nenhum dispositivo cadastrado</h2>
+        <p>Cadastre servidores, roteadores, impressoras ou switches para começar o monitoramento.</p>
+        <a class="botao primario" href="dispositivos/novo">Cadastrar o primeiro dispositivo</a>
+    </div>
+}
+else
+{
+    var ativos = resumo.Where(d => d.Ativo).ToList();
+    <section class="indicadores" aria-label="Resumo">
+        <div class="cartao indicador"><span class="valor">@ativos.Count</span><span class="rotulo">Monitorados</span></div>
+        <div class="cartao indicador"><span class="valor">@ativos.Count(d => d.Status == StatusAtivo.Online && !d.EstaVerificando)</span><span class="rotulo"><SeloStatus Status="StatusAtivo.Online" Pequeno /></span></div>
+        <div class="cartao indicador"><span class="valor">@ativos.Count(d => d.EstaVerificando)</span><span class="rotulo"><SeloStatus Status="StatusAtivo.Online" Tentativas="1" Pequeno /></span></div>
+        <div class="cartao indicador"><span class="valor">@ativos.Count(d => d.Status == StatusAtivo.Offline)</span><span class="rotulo"><SeloStatus Status="StatusAtivo.Offline" Pequeno /></span></div>
+        <div class="cartao indicador"><span class="valor">@ativos.Sum(d => d.ServicosIndisponiveis)</span><span class="rotulo">Serviços indisponíveis</span></div>
+    </section>
+
+    <div class="duas-colunas">
+        <section aria-label="Dispositivos">
+            <div class="grade-dispositivos">
+                @foreach (var d in resumo)
+                {
+                    var (classe, _) = Formatacao.Status(d.Ativo, d.Status, d.TentativasSemResposta);
+                    <article class="cartao dispositivo @classe">
+                        <div class="topo">
+                            <div>
+                                <div class="nome">@d.Nome</div>
+                                <div class="endereco">@d.Endereco</div>
+                            </div>
+                            <SeloStatus Ativo="d.Ativo" Status="d.Status" Tentativas="d.TentativasSemResposta" Limite="d.LimiteTentativas" />
+                        </div>
+                        @if (!string.IsNullOrWhiteSpace(d.Descricao))
+                        {
+                            <small>@d.Descricao</small>
+                        }
+                        <dl class="metricas">
+                            <dt>Latência (ping)</dt><dd>@(d.Status == StatusAtivo.Offline ? "sem resposta" : Formatacao.Latencia(d.UltimaLatenciaMs))</dd>
+                            <dt>Última verificação</dt><dd title="@Formatacao.DataHora(d.UltimaVerificacaoEm)">@Formatacao.Relativo(d.UltimaVerificacaoEm)</dd>
+                            <dt>Intervalo</dt><dd>@d.IntervaloSegundos s</dd>
+                        </dl>
+                        @if (d.Servicos.Count > 0)
+                        {
+                            <div class="servicos" aria-label="Serviços">
+                                @foreach (var s in d.Servicos)
+                                {
+                                    <SeloStatus Ativo="s.Ativo && d.Ativo" Status="s.Status" Tentativas="s.TentativasSemResposta"
+                                                Limite="d.LimiteTentativas" Pequeno Prefixo="@($"{s.Nome} :{s.Porta} · ")" />
+                                }
+                            </div>
+                            @if (d.Status == StatusAtivo.Offline)
+                            {
+                                <small>Serviços não verificados enquanto o dispositivo não responde ao ping.</small>
+                            }
+                        }
+                        <div class="rodape">
+                            <a href="graficos/@d.Id">Gráficos</a>
+                            <a href="dispositivos/@d.Id">Editar</a>
+                        </div>
+                    </article>
+                }
+            </div>
+        </section>
+
+        <aside>
+            <section class="cartao bloco">
+                <h2>Incidentes em aberto</h2>
+                @if (abertos.Count == 0)
+                {
+                    <p class="suave">Nenhuma indisponibilidade em curso.</p>
+                }
+                else
+                {
+                    <ul class="eventos">
+                        @foreach (var a in abertos)
+                        {
+                            <li>
+                                <SeloStatus Status="StatusAtivo.Offline" Pequeno />
+                                <div>
+                                    <strong>@a.NomeDispositivo@(a.NomeServico is null ? "" : $" · {a.NomeServico} :{a.Porta}")</strong><br />
+                                    <small>Desde @Formatacao.DataHora(a.Instante) (@Formatacao.Duracao(a.Duracao))</small>
+                                </div>
+                            </li>
+                        }
+                    </ul>
+                }
+            </section>
+
+            <section class="cartao bloco">
+                <h2>Eventos desta sessão</h2>
+                @if (eventos.Count == 0)
+                {
+                    <p class="suave">As mudanças de estado aparecerão aqui assim que forem detectadas.</p>
+                }
+                else
+                {
+                    <ul class="eventos" aria-live="polite">
+                        @foreach (var e in eventos)
+                        {
+                            <li>
+                                <span class="quando">@Formatacao.ParaLocal(e.Instante).ToString("HH:mm:ss")</span>
+                                <span>
+                                    @if (e.TipoEvento == TipoEvento.Queda)
+                                    {
+                                        <SeloStatus Status="StatusAtivo.Offline" Pequeno Prefixo="Queda · " />
+                                    }
+                                    else if (e.TipoEvento == TipoEvento.Restabelecimento)
+                                    {
+                                        <SeloStatus Status="StatusAtivo.Online" Pequeno Prefixo="Restabelecido · " />
+                                    }
+                                    @(e.Descricao ?? $"{e.NomeDispositivo}: estado atualizado.")
+                                </span>
+                            </li>
+                        }
+                    </ul>
+                }
+                <p><a href="historico">Ver histórico completo</a></p>
+            </section>
+        </aside>
+    </div>
+}
+
+@code {
+    private List<ResumoDispositivo>? resumo;
+    private List<EventoHistorico> abertos = [];
+    private readonly List<EstadoAlterado> eventos = [];
+    private DateTime atualizadoEm = DateTime.Now;
+    private string? erro;
+    private readonly SemaphoreSlim trava = new(1, 1);
+    private Timer? relogio;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await CarregarAsync();
+        // RF12: o painel assina o evento publicado pelo serviço de monitoramento.
+        Notificador.EstadoAlterado += AoAlterarEstado;
+        Notificador.CicloConcluido += AoConcluirCiclo;
+        // Mantém os tempos relativos ("há 20s") atualizados.
+        relogio = new Timer(_ => InvokeAsync(StateHasChanged), null, TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(10));
+    }
+
+    private Task AoAlterarEstado(EstadoAlterado evento) => InvokeAsync(async () =>
+    {
+        eventos.Insert(0, evento);
+        if (eventos.Count > 15) eventos.RemoveAt(eventos.Count - 1);
+        await CarregarAsync();
+        StateHasChanged();
+    });
+
+    private Task AoConcluirCiclo() => InvokeAsync(async () =>
+    {
+        await CarregarAsync();
+        StateHasChanged();
+    });
+
+    private async Task CarregarAsync()
+    {
+        if (!await trava.WaitAsync(0)) return; // já existe uma atualização em andamento
+        try
+        {
+            resumo = await Consulta.ObterResumoAsync();
+            abertos = await Consulta.ObterAlertasAbertosAsync();
+            atualizadoEm = DateTime.Now;
+            erro = null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao carregar o painel.");
+            erro = "Não foi possível consultar o banco de dados. O painel tentará novamente no próximo ciclo.";
+        }
+        finally
+        {
+            trava.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        Notificador.EstadoAlterado -= AoAlterarEstado;
+        Notificador.CicloConcluido -= AoConcluirCiclo;
+        relogio?.Dispose();
+    }
+}

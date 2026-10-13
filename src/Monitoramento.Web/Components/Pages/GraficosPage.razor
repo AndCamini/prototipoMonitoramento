@@ -1,0 +1,171 @@
+@page "/graficos"
+@page "/graficos/{Id:guid}"
+@implements IDisposable
+@inject IRepositorioDispositivo Repositorio
+@inject IConsultaPainel Consulta
+@inject INotificadorDeEstado Notificador
+@inject NavigationManager Navegacao
+@inject ILogger<GraficosPage> Logger
+
+<PageTitle>Gráficos e disponibilidade · Monitor de Rede</PageTitle>
+
+<header class="cabecalho">
+    <div>
+        <h1>Gráficos e disponibilidade</h1>
+        <p>Latência do ping e percentual de tempo em que o dispositivo e seus serviços estiveram disponíveis.</p>
+    </div>
+</header>
+
+@if (dispositivos is null)
+{
+    <p class="suave">Carregando…</p>
+    return;
+}
+@if (dispositivos.Count == 0)
+{
+    <div class="cartao vazio">Nenhum dispositivo cadastrado. <a href="dispositivos/novo">Cadastrar</a></div>
+    return;
+}
+
+<div class="filtros">
+    <div class="campo">
+        <label for="dispositivo">Dispositivo</label>
+        <select id="dispositivo" value="@selecionado?.Id" @onchange="AoSelecionar">
+            @foreach (var d in dispositivos)
+            {
+                <option value="@d.Id">@d.Nome (@d.Endereco)</option>
+            }
+        </select>
+    </div>
+    <SeletorPeriodo @ref="seletor" AoAlterar="AoMudarPeriodo" />
+    <button class="botao" @onclick="CarregarAsync">Atualizar</button>
+</div>
+
+@if (erro is not null)
+{
+    <div class="aviso erro">@erro</div>
+}
+
+@if (selecionado is not null && indice is not null)
+{
+    <section class="indicadores">
+        <div class="cartao indicador">
+            <span class="valor">@(indice.TotalVerificacoes == 0 ? "—" : $"{indice.PercentualDisponivel:0.##}%")</span>
+            <span class="rotulo">Disponibilidade (ping)</span>
+        </div>
+        <div class="cartao indicador">
+            <span class="valor">@(indice.LatenciaMediaMs is { } m ? $"{m:0} ms" : "—")</span>
+            <span class="rotulo">Latência média</span>
+        </div>
+        <div class="cartao indicador">
+            <span class="valor">@indice.QuantidadeQuedas</span>
+            <span class="rotulo">Quedas no período</span>
+        </div>
+        <div class="cartao indicador">
+            <span class="valor">@Formatacao.Duracao(indice.TempoIndisponivel)</span>
+            <span class="rotulo">Tempo indisponível</span>
+        </div>
+        <div class="cartao indicador">
+            <span class="valor">@indice.TotalVerificacoes</span>
+            <span class="rotulo">Verificações (@indice.VerificacoesComSucesso com resposta)</span>
+        </div>
+    </section>
+
+    <section class="cartao bloco">
+        <h2>Latência — @selecionado.Nome</h2>
+        <GraficoLatencia Pontos="pontos" De="periodo.De" Ate="periodo.Ate" Titulo="@($"Latência de {selecionado.Nome}")" />
+    </section>
+
+    <section class="cartao bloco">
+        <h2>Disponibilidade por serviço</h2>
+        @if (servicos.Count == 0)
+        {
+            <p class="suave">Este dispositivo não possui serviços TCP cadastrados.</p>
+        }
+        else
+        {
+            <div class="tabela-container">
+                <table>
+                    <thead>
+                        <tr><th>Serviço</th><th class="num">Porta</th><th>Disponibilidade</th><th class="num">%</th><th class="num">Verificações</th><th class="num">Quedas</th><th class="num">Tempo indisponível</th><th class="num">Conexão média</th></tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var (s, i) in servicos)
+                        {
+                            <tr>
+                                <td>@s.Nome</td>
+                                <td class="num">@s.Porta</td>
+                                <td><div class="barra-disponibilidade" aria-hidden="true"><span style="width: @(i.PercentualDisponivel.ToString(System.Globalization.CultureInfo.InvariantCulture))%"></span></div></td>
+                                <td class="num">@(i.TotalVerificacoes == 0 ? "—" : $"{i.PercentualDisponivel:0.##}%")</td>
+                                <td class="num">@i.TotalVerificacoes</td>
+                                <td class="num">@i.QuantidadeQuedas</td>
+                                <td class="num">@Formatacao.Duracao(i.TempoIndisponivel)</td>
+                                <td class="num">@(i.LatenciaMediaMs is { } media ? $"{media:0} ms" : "—")</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+            <p class="suave"><small>Os serviços só são verificados quando o dispositivo responde ao ping.</small></p>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public Guid? Id { get; set; }
+
+    private List<Dispositivo>? dispositivos;
+    private Dispositivo? selecionado;
+    private SeletorPeriodo? seletor;
+    private Periodo periodo = Periodo.DaChave("24h");
+    private List<PontoLatencia> pontos = [];
+    private IndiceDisponibilidade? indice;
+    private List<(ServicoTcp, IndiceDisponibilidade)> servicos = [];
+    private string? erro;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        dispositivos ??= await Repositorio.ObterTodosAsync();
+        selecionado = dispositivos.FirstOrDefault(d => d.Id == Id) ?? dispositivos.FirstOrDefault();
+        await CarregarAsync();
+        Notificador.EstadoAlterado -= AoAlterarEstado;
+        Notificador.EstadoAlterado += AoAlterarEstado;
+    }
+
+    private Task AoAlterarEstado(EstadoAlterado e) =>
+        e.DispositivoId == selecionado?.Id ? InvokeAsync(async () => { await CarregarAsync(); StateHasChanged(); }) : Task.CompletedTask;
+
+    private void AoSelecionar(ChangeEventArgs e)
+    {
+        if (Guid.TryParse(e.Value?.ToString(), out var id))
+            Navegacao.NavigateTo($"graficos/{id}");
+    }
+
+    private async Task AoMudarPeriodo(Periodo novo)
+    {
+        periodo = novo;
+        await CarregarAsync();
+    }
+
+    private async Task CarregarAsync()
+    {
+        if (selecionado is null) return;
+        if (seletor is not null) periodo = seletor.Atual;
+        try
+        {
+            pontos = await Consulta.ObterLatenciaAsync(selecionado.Id, periodo.De, periodo.Ate);
+            indice = await Consulta.ObterDisponibilidadeAsync(selecionado.Id, periodo.De, periodo.Ate);
+            servicos = [];
+            foreach (var s in selecionado.Servicos.OrderBy(s => s.Porta))
+                servicos.Add((s, await Consulta.ObterDisponibilidadeAsync(selecionado.Id, periodo.De, periodo.Ate, s.Id)));
+            erro = null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao carregar gráficos.");
+            erro = "Não foi possível consultar o banco de dados.";
+        }
+    }
+
+    public void Dispose() => Notificador.EstadoAlterado -= AoAlterarEstado;
+}

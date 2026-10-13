@@ -1,0 +1,18 @@
+# RNF06: a única dependência externa é o PostgreSQL, instalável em passo único:
+#   docker compose up -d
+services:
+  postgres:
+    image: postgres:16
+    container_name: monitoramento-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: monitoramento
+      POSTGRES_USER: monitoramento
+      POSTGRES_PASSWORD: monitoramento
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - dados-monitoramento:/var/lib/postgresql/data
+
+volumes:
+  dados-monitoramento:
