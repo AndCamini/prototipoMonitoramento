@@ -1,0 +1,185 @@
+@page "/dispositivos"
+@inject IRepositorioDispositivo Repositorio
+@inject IRepositorioMonitoramento Monitoramento
+@inject ILogger<DispositivosPage> Logger
+
+<PageTitle>Dispositivos · Monitor de Rede</PageTitle>
+
+<header class="cabecalho">
+    <div>
+        <h1>Dispositivos</h1>
+        <p>Cadastro dos ativos monitorados. Desative o monitoramento para pausar um dispositivo sem perder o cadastro.</p>
+    </div>
+    <a class="botao primario" href="dispositivos/novo">+ Cadastrar dispositivo</a>
+</header>
+
+@if (mensagem is not null)
+{
+    <div class="aviso @(mensagemErro ? "erro" : "sucesso")" role="status">@mensagem</div>
+}
+
+@if (dispositivos is null)
+{
+    <p class="suave">Carregando…</p>
+}
+else if (dispositivos.Count == 0)
+{
+    <div class="cartao vazio">
+        <p>Nenhum dispositivo cadastrado.</p>
+        <a class="botao primario" href="dispositivos/novo">Cadastrar dispositivo</a>
+    </div>
+}
+else
+{
+    <div class="cartao tabela-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>Nome</th>
+                    <th>Endereço</th>
+                    <th>Estado</th>
+                    <th class="num">Intervalo</th>
+                    <th class="num">Tolerância</th>
+                    <th>Serviços TCP</th>
+                    <th>Monitoramento</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var d in dispositivos)
+                {
+                    <tr>
+                        <td><strong>@d.Nome</strong>@if (!string.IsNullOrWhiteSpace(d.Descricao)) { <br /><small>@d.Descricao</small> }</td>
+                        <td><code>@d.Endereco</code></td>
+                        <td><SeloStatus Ativo="d.Ativo" Status="d.Status" Tentativas="d.TentativasSemResposta" Limite="d.LimiteTentativas" /></td>
+                        <td class="num">@d.IntervaloSegundos s</td>
+                        <td class="num">@d.LimiteTentativas falha(s)</td>
+                        <td>@(d.Servicos.Count == 0 ? "—" : string.Join(", ", d.Servicos.OrderBy(s => s.Porta).Select(s => $"{s.Nome} ({s.Porta})")))</td>
+                        <td>
+                            <label class="caixa">
+                                <input type="checkbox" checked="@d.Ativo" @onchange="() => AlternarAsync(d)" disabled="@ocupado" />
+                                @(d.Ativo ? "Ativo" : "Desativado")
+                            </label>
+                        </td>
+                        <td>
+                            <div class="acoes">
+                                <a class="botao pequeno" href="dispositivos/@d.Id">Editar</a>
+                                <a class="botao pequeno" href="graficos/@d.Id">Gráficos</a>
+                                <button class="botao pequeno perigo" @onclick="() => excluir = d">Excluir</button>
+                            </div>
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+}
+
+@if (excluir is not null)
+{
+    <div class="sobreposicao" role="dialog" aria-modal="true" aria-labelledby="titulo-excluir">
+        <div class="cartao dialogo">
+            <h2 id="titulo-excluir">Excluir “@excluir.Nome”?</h2>
+            <p>O dispositivo, seus serviços e <strong>todo o histórico</strong> de verificações e alertas serão removidos. Esta ação não pode ser desfeita.</p>
+            <p class="suave">Para apenas pausar o monitoramento, use a opção “Desativar”.</p>
+            <div class="acoes">
+                <button class="botao" @onclick="() => excluir = null">Cancelar</button>
+                <button class="botao perigo-cheio" @onclick="ExcluirAsync" disabled="@ocupado">Excluir definitivamente</button>
+            </div>
+        </div>
+    </div>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "salvo")] public string? Salvo { get; set; }
+
+    private List<Dispositivo>? dispositivos;
+    private Dispositivo? excluir;
+    private string? mensagem;
+    private bool mensagemErro;
+    private bool ocupado;
+
+    protected override Task OnInitializedAsync()
+    {
+        if (!string.IsNullOrWhiteSpace(Salvo))
+            Informar($"“{Salvo}” salvo com sucesso. A verificação ocorre no próximo ciclo do serviço de monitoramento.");
+        return CarregarAsync();
+    }
+
+    private async Task CarregarAsync()
+    {
+        try
+        {
+            dispositivos = await Repositorio.ObterTodosAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao listar dispositivos.");
+            Informar("Não foi possível consultar o banco de dados.", erro: true);
+            dispositivos ??= [];
+        }
+    }
+
+    // RF03: ativa/desativa o monitoramento sem remover o cadastro.
+    private async Task AlternarAsync(Dispositivo d)
+    {
+        ocupado = true;
+        try
+        {
+            var atual = await Repositorio.ObterPorIdAsync(d.Id);
+            if (atual is null) { await CarregarAsync(); return; }
+
+            if (atual.Ativo)
+            {
+                atual.Desativar();
+                await Repositorio.AtualizarAsync(atual);
+                await Monitoramento.EncerrarAlertasAbertosAsync(atual.Id, DateTime.UtcNow);
+                Informar($"Monitoramento de “{atual.Nome}” desativado.");
+            }
+            else
+            {
+                atual.Reativar();
+                await Repositorio.AtualizarAsync(atual);
+                Informar($"Monitoramento de “{atual.Nome}” reativado. A verificação ocorre no próximo ciclo.");
+            }
+            await CarregarAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao alterar monitoramento.");
+            Informar("Não foi possível alterar o monitoramento.", erro: true);
+        }
+        finally
+        {
+            ocupado = false;
+        }
+    }
+
+    private async Task ExcluirAsync()
+    {
+        if (excluir is null) return;
+        ocupado = true;
+        try
+        {
+            await Repositorio.RemoverAsync(excluir.Id);
+            Informar($"“{excluir.Nome}” foi excluído.");
+            excluir = null;
+            await CarregarAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao excluir dispositivo.");
+            Informar("Não foi possível excluir o dispositivo.", erro: true);
+        }
+        finally
+        {
+            ocupado = false;
+        }
+    }
+
+    private void Informar(string texto, bool erro = false)
+    {
+        mensagem = texto;
+        mensagemErro = erro;
+    }
+}

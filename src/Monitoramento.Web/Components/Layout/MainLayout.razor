@@ -1,0 +1,31 @@
+@inherits LayoutComponentBase
+
+<div class="app">
+    <aside class="barra-lateral">
+        <div class="marca">
+            <span class="marca-icone" aria-hidden="true"></span>
+            <div>
+                <strong>Monitor de Rede</strong>
+                <small>Disponibilidade de ativos</small>
+            </div>
+        </div>
+        <nav>
+            <NavLink href="" Match="NavLinkMatch.All">Painel</NavLink>
+            <NavLink href="dispositivos">Dispositivos</NavLink>
+            <NavLink href="graficos">Gráficos e disponibilidade</NavLink>
+            <NavLink href="historico">Histórico de eventos</NavLink>
+            <NavLink href="configuracoes">Configurações</NavLink>
+        </nav>
+        <footer>Verificação agentless: ICMP + TCP</footer>
+    </aside>
+
+    <main class="conteudo">
+        @Body
+    </main>
+</div>
+
+<div id="blazor-error-ui" data-nosnippet>
+    Ocorreu um erro inesperado.
+    <a href="." class="reload">Recarregar</a>
+    <span class="dismiss">🗙</span>
+</div>

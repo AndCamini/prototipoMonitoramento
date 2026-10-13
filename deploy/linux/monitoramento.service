@@ -1,0 +1,24 @@
+# Unidade do systemd (RNF03): inicia com a máquina e é reiniciada em caso de falha.
+# Instalação: sudo ./deploy/linux/instalar.sh
+[Unit]
+Description=Monitoramento de Disponibilidade de Ativos de Rede
+After=network-online.target postgresql.service docker.service
+Wants=network-online.target
+
+[Service]
+Type=notify
+User=monitoramento
+Group=monitoramento
+WorkingDirectory=/opt/monitoramento
+ExecStart=/opt/monitoramento/Monitoramento.Web
+Restart=always
+RestartSec=10
+Environment=ASPNETCORE_ENVIRONMENT=Production
+Environment=DOTNET_NOLOGO=1
+# Permite enviar ICMP Echo Request sem executar como root.
+AmbientCapabilities=CAP_NET_RAW
+CapabilityBoundingSet=CAP_NET_RAW
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
