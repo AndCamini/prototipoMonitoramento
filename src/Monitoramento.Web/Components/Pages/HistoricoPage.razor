@@ -1,0 +1,143 @@
+@page "/historico"
+@inject IRepositorioDispositivo Repositorio
+@inject IConsultaPainel Consulta
+@inject ILogger<HistoricoPage> Logger
+
+<PageTitle>Histórico de eventos · Monitor de Rede</PageTitle>
+
+<header class="cabecalho">
+    <div>
+        <h1>Histórico de eventos</h1>
+        <p>Quedas, restabelecimentos e verificações registradas, com filtros por dispositivo, período e tipo de ocorrência.</p>
+    </div>
+</header>
+
+<div class="filtros">
+    <div class="campo">
+        <label for="dispositivo">Dispositivo</label>
+        <select id="dispositivo" @bind="dispositivoId" @bind:after="CarregarAsync">
+            <option value="">Todos</option>
+            @foreach (var d in dispositivos)
+            {
+                <option value="@d.Id">@d.Nome</option>
+            }
+        </select>
+    </div>
+    <SeletorPeriodo @ref="seletor" ChaveInicial="7d" AoAlterar="_ => CarregarAsync()" />
+    <fieldset class="campo" style="border: 0; padding: 0; margin: 0">
+        <legend style="font-weight: 600; font-size: .88rem; margin-bottom: 5px">Tipo de ocorrência</legend>
+        <div class="acoes">
+            @foreach (var tipo in Enum.GetValues<TipoOcorrencia>())
+            {
+                <label class="caixa">
+                    <input type="checkbox" checked="@tipos.Contains(tipo)" @onchange="() => AlternarTipo(tipo)" />
+                    @Formatacao.Ocorrencia(tipo)
+                </label>
+            }
+        </div>
+    </fieldset>
+</div>
+
+@if (erro is not null)
+{
+    <div class="aviso erro">@erro</div>
+}
+
+@if (eventos is null)
+{
+    <p class="suave">Carregando…</p>
+}
+else if (eventos.Count == 0)
+{
+    <div class="cartao vazio">Nenhum evento encontrado com os filtros selecionados.</div>
+}
+else
+{
+    <div class="cartao tabela-container">
+        <table>
+            <thead>
+                <tr><th>Data e hora</th><th>Ocorrência</th><th>Dispositivo</th><th>Serviço</th><th>Detalhes</th><th class="num">Duração / latência</th></tr>
+            </thead>
+            <tbody>
+                @foreach (var e in eventos)
+                {
+                    <tr>
+                        <td style="white-space: nowrap">@Formatacao.DataHora(e.Instante)</td>
+                        <td>
+                            <span class="selo pequeno @Formatacao.ClasseOcorrencia(e.Tipo)">
+                                <span class="icone" aria-hidden="true">@(e.Tipo switch { TipoOcorrencia.Queda => "✖", TipoOcorrencia.Restabelecimento => "●", TipoOcorrencia.FalhaDeVerificacao => "▲", _ => "○" })</span>
+                                @Formatacao.Ocorrencia(e.Tipo)
+                            </span>
+                            @if (e.EmAberto) { <br /><small>em aberto</small> }
+                        </td>
+                        <td>@e.NomeDispositivo</td>
+                        <td>@(e.NomeServico is null ? (e.Tipo is TipoOcorrencia.Queda or TipoOcorrencia.Restabelecimento ? "—" : "Ping (ICMP)") : $"{e.NomeServico} ({e.Porta})")</td>
+                        <td>@e.Descricao</td>
+                        <td class="num">
+                            @(e.Tipo == TipoOcorrencia.Queda ? Formatacao.Duracao(e.Duracao)
+                              : e.Tipo == TipoOcorrencia.VerificacaoComSucesso ? Formatacao.Latencia(e.LatenciaMs) : "—")
+                        </td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+    </div>
+    @if (eventos.Count >= Limite)
+    {
+        <p class="suave">Exibindo os @Limite eventos mais recentes. Refine os filtros para ver registros mais antigos.</p>
+    }
+}
+
+@code {
+    private const int Limite = 500;
+    private List<Dispositivo> dispositivos = [];
+    private string dispositivoId = string.Empty;
+    private readonly HashSet<TipoOcorrencia> tipos = [TipoOcorrencia.Queda, TipoOcorrencia.Restabelecimento];
+    private SeletorPeriodo? seletor;
+    private List<EventoHistorico>? eventos;
+    private string? erro;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            dispositivos = await Repositorio.ObterTodosAsync();
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao listar dispositivos.");
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool primeiraVez)
+    {
+        if (primeiraVez)
+        {
+            await CarregarAsync();
+            StateHasChanged();
+        }
+    }
+
+    private async Task AlternarTipo(TipoOcorrencia tipo)
+    {
+        if (!tipos.Remove(tipo)) tipos.Add(tipo);
+        await CarregarAsync();
+    }
+
+    private async Task CarregarAsync()
+    {
+        var periodo = seletor?.Atual ?? Periodo.DaChave("7d");
+        Guid? id = Guid.TryParse(dispositivoId, out var g) ? g : null;
+        try
+        {
+            eventos = tipos.Count == 0 ? [] : await Consulta.ObterHistoricoAsync(new FiltroHistorico(id, periodo.De, periodo.Ate, tipos.ToList(), Limite));
+            erro = null;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao consultar histórico.");
+            erro = "Não foi possível consultar o banco de dados.";
+            eventos ??= [];
+        }
+    }
+}

@@ -1,0 +1,340 @@
+@page "/dispositivos/novo"
+@page "/dispositivos/{Id:guid}"
+@using Microsoft.Extensions.Options
+@using Monitoramento.Servico
+@using Monitoramento.Servico.Verificadores
+@inject IRepositorioDispositivo Repositorio
+@inject IRepositorioMonitoramento Monitoramento
+@inject IEnumerable<IVerificador> Verificadores
+@inject IOptions<MonitoramentoOptions> Opcoes
+@inject NavigationManager Navegacao
+@inject ILogger<CadastroDispositivoPage> Logger
+
+<PageTitle>@(Edicao ? "Editar" : "Cadastrar") dispositivo · Monitor de Rede</PageTitle>
+
+<header class="cabecalho">
+    <div>
+        <h1>@(Edicao ? $"Editar “{original?.Nome}”" : "Cadastrar dispositivo")</h1>
+        <p>Informe o equipamento a ser verificado. Nenhum software precisa ser instalado nele.</p>
+    </div>
+    <a class="botao" href="dispositivos">Voltar</a>
+</header>
+
+@if (naoEncontrado)
+{
+    <div class="aviso erro">Dispositivo não encontrado. <a href="dispositivos">Voltar à lista</a></div>
+    return;
+}
+
+@if (erros.Count > 0)
+{
+    <div class="aviso erro" role="alert">
+        <ul class="validation-errors">
+            @foreach (var e in erros) { <li>@e</li> }
+        </ul>
+    </div>
+}
+
+@if (aguardandoConfirmacao)
+{
+    <div class="aviso atencao" role="alert">
+        <strong>O dispositivo não respondeu ao ping de teste.</strong>
+        <div>@resultadoTeste?.MensagemErro</div>
+        <small>Alguns equipamentos bloqueiam ICMP ou podem estar desligados no momento. Deseja confirmar o cadastro mesmo assim?</small>
+        <div class="acoes">
+            <button class="botao primario" @onclick="ConfirmarSemRespostaAsync" disabled="@ocupado">Confirmar cadastro</button>
+            <button class="botao" @onclick="() => aguardandoConfirmacao = false">Corrigir os dados</button>
+        </div>
+    </div>
+}
+
+<EditForm Model="formulario" OnValidSubmit="SalvarAsync" FormName="cadastro-dispositivo">
+    <DataAnnotationsValidator />
+
+    <section class="cartao bloco">
+        <h2>Identificação</h2>
+        <div class="formulario">
+            <div class="campo">
+                <label for="nome">Nome</label>
+                <InputText id="nome" @bind-Value="formulario.Nome" placeholder="Ex.: Servidor de arquivos" />
+                <ValidationMessage For="() => formulario.Nome" />
+            </div>
+            <div class="campo">
+                <label for="endereco">Endereço IP ou nome de host</label>
+                <InputText id="endereco" @bind-Value="formulario.Endereco" placeholder="Ex.: 192.168.0.10" />
+                <ValidationMessage For="() => formulario.Endereco" />
+            </div>
+            <div class="campo largo">
+                <label for="descricao">Descrição <span class="suave">(opcional)</span></label>
+                <InputTextArea id="descricao" @bind-Value="formulario.Descricao" rows="2" placeholder="Localização, responsável, observações…" />
+                <ValidationMessage For="() => formulario.Descricao" />
+            </div>
+        </div>
+    </section>
+
+    <section class="cartao bloco">
+        <h2>Verificação</h2>
+        <div class="formulario">
+            <div class="campo">
+                <label for="intervalo">Intervalo entre verificações (segundos)</label>
+                <InputNumber id="intervalo" @bind-Value="formulario.IntervaloSegundos" min="10" max="3600" />
+                <span class="ajuda">Padrão: @Opcoes.Value.IntervaloPadraoSegundos s. Entre 10 e 3600.</span>
+                <ValidationMessage For="() => formulario.IntervaloSegundos" />
+            </div>
+            <div class="campo">
+                <label for="tentativas">Tolerância (falhas seguidas antes do alerta)</label>
+                <InputNumber id="tentativas" @bind-Value="formulario.LimiteTentativas" min="1" max="10" />
+                <span class="ajuda">Evita alertas por perda isolada de pacote. Entre 1 e 10.</span>
+                <ValidationMessage For="() => formulario.LimiteTentativas" />
+            </div>
+            <div class="campo">
+                <label>Monitoramento</label>
+                <label class="caixa"><InputCheckbox @bind-Value="formulario.Ativo" /> Ativo</label>
+                <span class="ajuda">Desative para pausar sem perder o cadastro.</span>
+            </div>
+        </div>
+    </section>
+
+    <section class="cartao bloco">
+        <h2>Serviços TCP <span class="suave">(opcional)</span></h2>
+        <p class="suave">Portas que devem aceitar conexões, verificadas sempre que o dispositivo responde ao ping.</p>
+
+        @if (formulario.Servicos.Count > 0)
+        {
+            <div class="tabela-container">
+                <table>
+                    <thead><tr><th>Nome do serviço</th><th>Porta</th><th>Ativo</th><th></th></tr></thead>
+                    <tbody>
+                        @foreach (var servico in formulario.Servicos)
+                        {
+                            <tr>
+                                <td><InputText @bind-Value="servico.Nome" placeholder="Ex.: Compartilhamento SMB" aria-label="Nome do serviço" /></td>
+                                <td><InputNumber @bind-Value="servico.Porta" min="1" max="65535" style="width: 110px" aria-label="Porta" /></td>
+                                <td><InputCheckbox @bind-Value="servico.Ativo" aria-label="Serviço ativo" /></td>
+                                <td><button type="button" class="botao pequeno perigo" @onclick="() => formulario.Servicos.Remove(servico)">Remover</button></td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        <div class="acoes" style="margin-top: 12px">
+            <button type="button" class="botao" @onclick="() => formulario.Servicos.Add(new FormularioServico())">+ Adicionar porta</button>
+            <select @onchange="AdicionarComum" aria-label="Adicionar serviço comum">
+                <option value="">Adicionar serviço comum…</option>
+                @foreach (var (nome, porta) in ServicosComuns.Lista)
+                {
+                    <option value="@porta">@nome (@porta)</option>
+                }
+            </select>
+        </div>
+    </section>
+
+    <section class="cartao bloco">
+        <h2>Teste de conexão</h2>
+        <p class="suave">Executa agora um ping e as conexões TCP, sem salvar.</p>
+        <button type="button" class="botao" @onclick="TestarAsync" disabled="@(ocupado || string.IsNullOrWhiteSpace(formulario.Endereco))">
+            @(testando ? "Testando…" : "Testar conexão")
+        </button>
+        @if (testes.Count > 0)
+        {
+            <ul class="eventos" style="margin-top: 12px">
+                @foreach (var (rotulo, r) in testes)
+                {
+                    <li>
+                        <SeloStatus Status="r.Sucesso ? StatusAtivo.Online : StatusAtivo.Offline" Pequeno />
+                        <span><strong>@rotulo</strong>: @(r.Sucesso ? $"respondeu em {r.LatenciaMs} ms" : r.MensagemErro)</span>
+                    </li>
+                }
+            </ul>
+        }
+    </section>
+
+    <div class="acoes">
+        <button type="submit" class="botao primario" disabled="@ocupado">@(ocupado && !testando ? "Salvando…" : Edicao ? "Salvar alterações" : "Cadastrar")</button>
+        <a class="botao" href="dispositivos">Cancelar</a>
+    </div>
+</EditForm>
+
+@code {
+    [Parameter] public Guid? Id { get; set; }
+
+    private bool Edicao => Id is not null;
+    private FormularioDispositivo formulario = new();
+    private Dispositivo? original;
+    private bool naoEncontrado;
+    private bool ocupado, testando, aguardandoConfirmacao;
+    private ResultadoVerificacao? resultadoTeste;
+    private List<string> erros = [];
+    private List<(string Rotulo, ResultadoVerificacao Resultado)> testes = [];
+
+    private IVerificador Icmp => Verificadores.First(v => v.Tipo == TipoVerificacao.Icmp);
+    private IVerificador Tcp => Verificadores.First(v => v.Tipo == TipoVerificacao.Tcp);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (Id is { } id)
+        {
+            original = await Repositorio.ObterPorIdAsync(id);
+            if (original is null) { naoEncontrado = true; return; }
+            formulario = FormularioDispositivo.De(original);
+        }
+        else
+        {
+            // RF05: o intervalo padrão é sugerido, com possibilidade de ajuste individual.
+            formulario = new FormularioDispositivo
+            {
+                IntervaloSegundos = Math.Clamp(Opcoes.Value.IntervaloPadraoSegundos, Dispositivo.IntervaloMinimoSegundos, Dispositivo.IntervaloMaximoSegundos),
+                LimiteTentativas = Math.Clamp(Opcoes.Value.LimiteTentativasPadrao, Dispositivo.LimiteTentativasMinimo, Dispositivo.LimiteTentativasMaximo)
+            };
+        }
+    }
+
+    private void AdicionarComum(ChangeEventArgs e)
+    {
+        if (!int.TryParse(e.Value?.ToString(), out var porta)) return;
+        var (nome, _) = ServicosComuns.Lista.First(s => s.Porta == porta);
+        if (formulario.Servicos.All(s => s.Porta != porta))
+            formulario.Servicos.Add(new FormularioServico { Nome = nome, Porta = porta });
+    }
+
+    private async Task TestarAsync()
+    {
+        ocupado = testando = true;
+        testes = [];
+        try
+        {
+            var endereco = formulario.Endereco.Trim();
+            var icmp = await Icmp.VerificarAsync(new AlvoVerificacao(endereco));
+            testes.Add(("Ping (ICMP)", icmp));
+            var portas = formulario.Servicos.Where(s => s.Porta is >= 1 and <= 65535).ToList();
+            var resultados = await Task.WhenAll(portas.Select(s => Tcp.VerificarAsync(new AlvoVerificacao(endereco, s.Porta))));
+            testes.AddRange(portas.Zip(resultados, (s, r) => ($"{(string.IsNullOrWhiteSpace(s.Nome) ? "Porta" : s.Nome)} ({s.Porta})", r)));
+        }
+        finally
+        {
+            ocupado = testando = false;
+        }
+    }
+
+    // Fluxo da Figura 4: validar → verificação inicial (ping) → confirmar se não respondeu → gravar.
+    private async Task SalvarAsync()
+    {
+        erros = formulario.ValidarServicos();
+        formulario.Endereco = formulario.Endereco.Trim();
+        formulario.Nome = formulario.Nome.Trim();
+        if (erros.Count > 0) return;
+
+        ocupado = true;
+        try
+        {
+            if (await Repositorio.EnderecoEmUsoAsync(formulario.Endereco, Id))
+            {
+                erros = [$"Já existe um dispositivo cadastrado com o endereço {formulario.Endereco}."];
+                return;
+            }
+
+            var precisaTestar = !Edicao || !string.Equals(original!.Endereco, formulario.Endereco, StringComparison.OrdinalIgnoreCase);
+            if (precisaTestar)
+            {
+                resultadoTeste = await Icmp.VerificarAsync(new AlvoVerificacao(formulario.Endereco));
+                if (!resultadoTeste.Sucesso)
+                {
+                    aguardandoConfirmacao = true;
+                    return;
+                }
+            }
+
+            await GravarAsync();
+        }
+        finally
+        {
+            ocupado = false;
+        }
+    }
+
+    private async Task ConfirmarSemRespostaAsync()
+    {
+        ocupado = true;
+        try
+        {
+            await GravarAsync();
+        }
+        finally
+        {
+            ocupado = false;
+        }
+    }
+
+    private async Task GravarAsync()
+    {
+        aguardandoConfirmacao = false;
+        try
+        {
+            if (Edicao)
+                await AtualizarExistenteAsync();
+            else
+                await CadastrarNovoAsync();
+
+            // O dispositivo passa a integrar a lista lida pelo serviço no ciclo seguinte.
+            Navegacao.NavigateTo($"dispositivos?salvo={Uri.EscapeDataString(formulario.Nome)}");
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException or Microsoft.EntityFrameworkCore.DbUpdateException)
+        {
+            Logger.LogWarning(ex, "Falha ao gravar dispositivo.");
+            erros = [ex is Microsoft.EntityFrameworkCore.DbUpdateException
+                ? "Não foi possível gravar: verifique se o endereço ou alguma porta já está em uso."
+                : ex.Message];
+        }
+    }
+
+    private async Task CadastrarNovoAsync()
+    {
+        var dispositivo = new Dispositivo(formulario.Nome, formulario.Endereco, Vazio(formulario.Descricao),
+            formulario.IntervaloSegundos, formulario.LimiteTentativas);
+        foreach (var s in formulario.Servicos)
+        {
+            var servico = dispositivo.AdicionarServico(s.Nome.Trim(), s.Porta!.Value);
+            if (!s.Ativo) servico.Desativar();
+        }
+        if (!formulario.Ativo) dispositivo.Desativar();
+        await Repositorio.AdicionarAsync(dispositivo);
+    }
+
+    private async Task AtualizarExistenteAsync()
+    {
+        var d = original!;
+        var estavaAtivo = d.Ativo;
+        d.Nome = formulario.Nome;
+        d.Endereco = formulario.Endereco;
+        d.Descricao = Vazio(formulario.Descricao);
+        d.IntervaloSegundos = formulario.IntervaloSegundos;
+        d.LimiteTentativas = formulario.LimiteTentativas;
+        if (formulario.Ativo) d.Reativar(); else d.Desativar();
+
+        foreach (var removido in d.Servicos.Where(s => formulario.Servicos.All(f => f.Id != s.Id)).ToList())
+            d.RemoverServico(removido);
+
+        foreach (var f in formulario.Servicos)
+        {
+            var servico = f.Id is { } sid ? d.Servicos.FirstOrDefault(s => s.Id == sid) : null;
+            if (servico is null)
+            {
+                servico = d.AdicionarServico(f.Nome.Trim(), f.Porta!.Value);
+            }
+            else
+            {
+                servico.Nome = f.Nome.Trim();
+                servico.Porta = f.Porta!.Value;
+            }
+            if (f.Ativo) servico.Reativar(); else servico.Desativar();
+        }
+
+        await Repositorio.AtualizarAsync(d);
+        if (estavaAtivo && !d.Ativo)
+            await Monitoramento.EncerrarAlertasAbertosAsync(d.Id, DateTime.UtcNow);
+    }
+
+    private static string? Vazio(string? texto) => string.IsNullOrWhiteSpace(texto) ? null : texto.Trim();
+}

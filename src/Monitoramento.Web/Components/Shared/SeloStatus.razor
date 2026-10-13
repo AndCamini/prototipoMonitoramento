@@ -1,0 +1,25 @@
+@* Estado de um ativo com ícone e rótulo textual (RNF08: nunca apenas cor). *@
+@{
+    var (classe, rotulo) = Formatacao.Status(Ativo, Status, Tentativas);
+    var icone = classe switch { "online" => "●", "offline" => "✖", "verificando" => "▲", "desativado" => "⏸", _ => "○" };
+}
+<span class="selo @classe @(Pequeno ? "pequeno" : "")" title="@Dica">
+    <span class="icone" aria-hidden="true">@icone</span>
+    @(Prefixo)@rotulo@(classe == "verificando" && Limite > 0 ? $" ({Tentativas}/{Limite})" : "")
+</span>
+
+@code {
+    [Parameter] public bool Ativo { get; set; } = true;
+    [Parameter] public StatusAtivo Status { get; set; }
+    [Parameter] public int Tentativas { get; set; }
+    [Parameter] public int Limite { get; set; }
+    [Parameter] public bool Pequeno { get; set; }
+    [Parameter] public string? Prefixo { get; set; }
+
+    private string Dica => Formatacao.Status(Ativo, Status, Tentativas).Rotulo switch
+    {
+        "Verificando" => "Houve falha, mas a indisponibilidade ainda não foi confirmada.",
+        "Indisponível" => "Indisponibilidade confirmada após as tentativas configuradas.",
+        _ => string.Empty
+    };
+}

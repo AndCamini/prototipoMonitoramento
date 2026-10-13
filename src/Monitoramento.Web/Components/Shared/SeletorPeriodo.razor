@@ -1,0 +1,55 @@
+@* Seleção do período dos gráficos e do histórico: atalhos ou intervalo personalizado. *@
+<div class="campo">
+    <label for="periodo">Período</label>
+    <select id="periodo" value="@chave" @onchange="AoMudarAtalho">
+        @foreach (var p in Periodo.Predefinidos)
+        {
+            <option value="@p.Chave">@p.Rotulo</option>
+        }
+        <option value="personalizado">Personalizado…</option>
+    </select>
+</div>
+@if (chave == "personalizado")
+{
+    <div class="campo">
+        <label for="de">De</label>
+        <input id="de" type="datetime-local" @bind="de" @bind:after="AoMudarPersonalizado" />
+    </div>
+    <div class="campo">
+        <label for="ate">Até</label>
+        <input id="ate" type="datetime-local" @bind="ate" @bind:after="AoMudarPersonalizado" />
+    </div>
+}
+
+@code {
+    [Parameter] public string ChaveInicial { get; set; } = "24h";
+    [Parameter] public EventCallback<Periodo> AoAlterar { get; set; }
+
+    private string chave = "24h";
+    private DateTime de = DateTime.Now.AddDays(-1);
+    private DateTime ate = DateTime.Now;
+
+    protected override void OnInitialized() => chave = ChaveInicial;
+
+    /// <summary>Período atual; atalhos são recalculados até "agora" a cada chamada.</summary>
+    public Periodo Atual => chave == "personalizado"
+        ? new Periodo(Formatacao.ParaUtc(de), Formatacao.ParaUtc(ate))
+        : Periodo.DaChave(chave);
+
+    private async Task AoMudarAtalho(ChangeEventArgs e)
+    {
+        chave = e.Value?.ToString() ?? "24h";
+        if (chave == "personalizado")
+        {
+            var atual = Periodo.DaChave("24h");
+            de = Formatacao.ParaLocal(atual.De);
+            ate = Formatacao.ParaLocal(atual.Ate);
+        }
+        await AoAlterar.InvokeAsync(Atual);
+    }
+
+    private async Task AoMudarPersonalizado()
+    {
+        if (ate > de) await AoAlterar.InvokeAsync(Atual);
+    }
+}

@@ -1,0 +1,83 @@
+@page "/configuracoes"
+@using Microsoft.Extensions.Options
+@using Monitoramento.Servico
+@inject IOptions<MonitoramentoOptions> Opcoes
+@inject IRepositorioDispositivo Repositorio
+@inject ILogger<ConfiguracoesPage> Logger
+
+<PageTitle>Configurações · Monitor de Rede</PageTitle>
+
+<header class="cabecalho">
+    <div>
+        <h1>Configurações</h1>
+        <p>Parâmetros do serviço de monitoramento.</p>
+    </div>
+</header>
+
+@if (mensagem is not null)
+{
+    <div class="aviso @(mensagemErro ? "erro" : "sucesso")" role="status">@mensagem</div>
+}
+
+<section class="cartao bloco">
+    <h2>Intervalo de verificação para todos os dispositivos</h2>
+    <p class="suave">Aplica o mesmo intervalo a todos os dispositivos cadastrados. Depois, cada um pode ser ajustado individualmente na tela de edição.</p>
+    <div class="filtros">
+        <div class="campo">
+            <label for="intervalo">Intervalo (segundos)</label>
+            <input id="intervalo" type="number" min="10" max="3600" @bind="intervalo" />
+        </div>
+        <button class="botao primario" @onclick="AplicarAsync" disabled="@ocupado">Aplicar a todos</button>
+    </div>
+</section>
+
+<section class="cartao bloco">
+    <h2>Parâmetros do serviço</h2>
+    <p class="suave">Definidos na seção <code>Monitoramento</code> do arquivo <code>appsettings.json</code>. Alterações exigem reiniciar o serviço.</p>
+    <div class="tabela-container">
+        <table>
+            <tbody>
+                <tr><td>Intervalo padrão sugerido no cadastro</td><td class="num">@Opcoes.Value.IntervaloPadraoSegundos s</td></tr>
+                <tr><td>Tolerância padrão (falhas seguidas antes do alerta)</td><td class="num">@Opcoes.Value.LimiteTentativasPadrao</td></tr>
+                <tr><td>Tempo limite do ping (ICMP)</td><td class="num">@Opcoes.Value.TimeoutIcmpMs ms</td></tr>
+                <tr><td>Tempo limite da conexão TCP</td><td class="num">@Opcoes.Value.TimeoutTcpMs ms</td></tr>
+                <tr><td>Verificações simultâneas (máximo)</td><td class="num">@Opcoes.Value.MaxVerificacoesSimultaneas</td></tr>
+                <tr><td>Pulso do agendador</td><td class="num">@Opcoes.Value.PulsoSegundos s</td></tr>
+            </tbody>
+        </table>
+    </div>
+</section>
+
+@code {
+    private int intervalo;
+    private bool ocupado;
+    private string? mensagem;
+    private bool mensagemErro;
+
+    protected override void OnInitialized() => intervalo = Opcoes.Value.IntervaloPadraoSegundos;
+
+    // RF05: valor padrão aplicável a todos os dispositivos.
+    private async Task AplicarAsync()
+    {
+        if (intervalo is < Dispositivo.IntervaloMinimoSegundos or > Dispositivo.IntervaloMaximoSegundos)
+        {
+            (mensagem, mensagemErro) = ("O intervalo deve estar entre 10 e 3600 segundos.", true);
+            return;
+        }
+        ocupado = true;
+        try
+        {
+            var total = await Repositorio.AplicarIntervaloATodosAsync(intervalo);
+            (mensagem, mensagemErro) = ($"Intervalo de {intervalo} s aplicado a {total} dispositivo(s).", false);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogWarning(ex, "Falha ao aplicar intervalo.");
+            (mensagem, mensagemErro) = ("Não foi possível gravar a alteração.", true);
+        }
+        finally
+        {
+            ocupado = false;
+        }
+    }
+}
